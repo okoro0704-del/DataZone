@@ -1,10 +1,10 @@
 [build]
 builder = "RAILPACK"
-buildCommand = "npm run build -w @hospitalityos/shared && npm run build -w @datazone/db && npm run build:self -w @datazone/service"
+buildCommand = "npm run build"
 
 [deploy]
-startCommand = "npm run start -w @datazone/service"
+startCommand = "npm run start"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
