@@ -1,0 +1,323 @@
+// Data Zone — Media Drive & Cross-Platform Publishing Engine
+// PostgreSQL schema for assets, render presets, distribution, provenance & BaaS.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  OTHER
+}
+
+enum EncryptionState {
+  NONE
+  PENDING
+  ENCRYPTED_ESFS
+  FAILED
+}
+
+enum PlatformTarget {
+  INSTAGRAM_REEL
+  INSTAGRAM_FEED
+  FACEBOOK_PAGE
+  FACEBOOK_REEL
+  YOUTUBE_SHORTS
+  YOUTUBE_VIDEO
+  FB_FEED
+  LIVE_OS_PERSONAL
+  LIVE_OS_BUSINESS
+  WEBHOOK
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  FAILED
+  CANCELLED
+  REVOKED
+}
+
+enum RenderStatus {
+  PENDING
+  QUEUED
+  RENDERING
+  READY
+  FAILED
+}
+
+enum UploadIntentStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+/// Master or derived media file metadata (bytes live in Sovereign Drive).
+model MediaAsset {
+  id               String          @id @default(cuid())
+  /// Sovereign Drive object id
+  sovereignAssetId String          @unique
+  filename         String
+  originalUrl      String?
+  mimeType         String
+  kind             MediaKind       @default(OTHER)
+  sizeBytes        BigInt
+  width            Int?
+  height           Int?
+  durationMs       Int?
+  /// eSFS / Trust ID encryption-at-rest state
+  encryptionState  EncryptionState @default(PENDING)
+  /// Trust ID subject ($TID) that owns this asset
+  tidOwner         String
+  tenantId         String
+  /// Parent master asset when this row is a rendered variant
+  masterAssetId    String?
+  masterAsset      MediaAsset?     @relation("AssetVariants", fields: [masterAssetId], references: [id], onDelete: Cascade)
+  variants         MediaAsset[]    @relation("AssetVariants")
+  /// Which render preset produced this variant (null for masters)
+  renderPresetId   String?
+  renderPreset     RenderPreset?   @relation(fields: [renderPresetId], references: [id])
+  renderStatus     RenderStatus    @default(READY)
+  checksumSha256   String?
+  metadata         Json?
+  /// Soft-revoked: CDN + downstream platforms invalidated
+  revokedAt        DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  deletedAt        DateTime?
+
+  distributionJobs DistributionJob[]
+  provenance       MediaProvenance?
+  licensePolicy    LicensePolicy?
+  uploadIntents    UploadIntent[]
+  revocationEvents RevocationEvent[]
+
+  @@index([tidOwner, createdAt])
+  @@index([tenantId, kind])
+  @@index([masterAssetId])
+  @@index([revokedAt])
+  @@map("media_assets")
+}
+
+/// Platform aspect-ratio / resolution definitions for automated renders.
+model RenderPreset {
+  id            String         @id @default(cuid())
+  code          PlatformTarget @unique
+  label         String
+  width         Int
+  height        Int
+  /// Preferred container / codec hints (e.g. video/mp4, image/jpeg)
+  outputMime    String         @default("video/mp4")
+  /// FFmpeg / sharp crop mode: cover | contain | crop_center
+  fitMode       String         @default("cover")
+  maxDurationMs Int?
+  bitrateKbps   Int?
+  active        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  variants MediaAsset[]
+
+  @@map("render_presets")
+}
+
+/// Cross-platform publishing job tracked per target surface.
+model DistributionJob {
+  id                String         @id @default(cuid())
+  mediaAssetId      String
+  mediaAsset        MediaAsset     @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+  /// Logical platform family used for OAuth + Graph routing
+  platform          String
+  /// Concrete surface (reel, feed, shorts, LiveOS, webhook…)
+  target            PlatformTarget
+  status            JobStatus      @default(PENDING)
+  /// Variant asset used for upload (rendered crop); falls back to master
+  renderAssetId     String?
+  caption           String?
+  externalPostId    String?
+  externalUrl       String?
+  errorMessage      String?
+  /// OmniHub connection id used for tokens
+  omniConnectionId  String?
+  /// Developer webhook endpoint id when target=WEBHOOK
+  webhookEndpointId String?
+  publishedAt       DateTime?
+  revokedAt         DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  tidOwner          String
+  tenantId          String
+
+  @@index([tidOwner, status])
+  @@index([mediaAssetId])
+  @@index([platform, status])
+  @@map("distribution_jobs")
+}
+
+/// Optional OmniHub social connection cache (tokens fetched live; ids stored).
+model SocialConnection {
+  id                String   @id @default(cuid())
+  tidOwner          String
+  tenantId          String
+  provider          String /// META | GOOGLE | YOUTUBE | LIVE_OS
+  omniConnectionId  String   @unique
+  externalAccountId String?
+  displayName       String?
+  scopes            String[]
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([tidOwner, provider, externalAccountId])
+  @@index([tidOwner, provider])
+  @@map("social_connections")
+}
+
+/// Immutable media lineage / provenance ledger entry.
+model MediaProvenance {
+  id                String     @id @default(cuid())
+  assetId           String     @unique
+  asset             MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  creatorTid        String
+  /// SHA-256 of original bytes at creation (originHash)
+  originHash        String
+  /// Parent for derivatives / re-renders (nullable for masters)
+  parentAssetId     String?
+  creationTimestamp DateTime   @default(now())
+  /// Device / client attestation signature (passkey or TPM blob)
+  deviceSignature  String?
+  /// Optional app / SDK fingerprint
+  clientFingerprint String?
+  metadata          Json?
+  createdAt         DateTime   @default(now())
+
+  @@index([creatorTid, creationTimestamp])
+  @@index([originHash])
+  @@index([parentAssetId])
+  @@map("media_provenance")
+}
+
+/// Licensing / permission policy attached to an asset.
+model LicensePolicy {
+  id                  String     @id @default(cuid())
+  assetId             String     @unique
+  asset               MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  isPublic            Boolean    @default(false)
+  allowReuse          Boolean    @default(false)
+  canReshare          Boolean    @default(false)
+  /// Allowed distribution surfaces e.g. LIVE_OS, INSTAGRAM, FACEBOOK
+  allowedPlatforms    String[]
+  /// Monetization / royalty terms (opaque JSON or human-readable)
+  monetizationTerms   String?
+  /// Royalty fee as % of video ad cap
+  royaltyFeeVidCap    Float      @default(0)
+  expirationTimestamp DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  @@index([isPublic])
+  @@map("license_policies")
+}
+
+/// Developer BaaS API key (hashed at rest).
+model DeveloperApiKey {
+  id         String    @id @default(cuid())
+  /// Public key id shown to developers (dz_live_…)
+  keyId      String    @unique
+  /// SHA-256 of secret
+  secretHash String
+  name       String
+  tenantId   String
+  ownerTid   String
+  scopes     String[]  @default(["assets:read", "assets:write", "distribute", "license"])
+  active     Boolean   @default(true)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  uploadIntents UploadIntent[]
+  webhooks      WebhookEndpoint[]
+
+  @@index([tenantId, active])
+  @@map("developer_api_keys")
+}
+
+/// Presigned encrypted upload intent issued by BaaS gateway.
+model UploadIntent {
+  id              String             @id @default(cuid())
+  apiKeyId        String
+  apiKey          DeveloperApiKey    @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  tidOwner        String
+  tenantId        String
+  filename        String
+  mimeType        String
+  maxSizeBytes    BigInt
+  /// HMAC token bound into the presigned URL
+  uploadToken     String             @unique
+  status          UploadIntentStatus @default(PENDING)
+  expiresAt       DateTime
+  /// Populated after client completes multipart upload
+  assetId         String?
+  asset           MediaAsset?        @relation(fields: [assetId], references: [id])
+  deviceSignature String?
+  createdAt       DateTime           @default(now())
+  completedAt     DateTime?
+
+  @@index([tidOwner, status])
+  @@index([expiresAt])
+  @@map("upload_intents")
+}
+
+/// Downstream webhook subscriptions for distribute / revoke events.
+model WebhookEndpoint {
+  id        String          @id @default(cuid())
+  apiKeyId  String
+  apiKey    DeveloperApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  url       String
+  secret    String
+  events    String[]        @default(["asset.distributed", "asset.revoked"])
+  active    Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([apiKeyId, active])
+  @@map("webhook_endpoints")
+}
+
+/// Audit log of revocation actions (CDN + platform deletes).
+model RevocationEvent {
+  id                String     @id @default(cuid())
+  assetId           String
+  asset             MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  requestedByTid    String
+  reason            String?
+  cdnInvalidated    Boolean    @default(false)
+  webhooksSent      Int        @default(0)
+  platformsNotified Int        @default(0)
+  createdAt         DateTime   @default(now())
+
+  @@index([assetId, createdAt])
+  @@map("revocation_events")
+}
+
+/// Soft CDN cache-key tombstones for instant revoke.
+model CdnCacheTombstone {
+  id        String   @id @default(cuid())
+  cacheKey  String   @unique
+  assetId   String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([assetId])
+  @@map("cdn_cache_tombstones")
+}

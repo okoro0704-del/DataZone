@@ -1,0 +1,9 @@
+{
+  "name": "Data Zone Media Drive",
+  "short_name": "Data Zone",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c1210",
+  "theme_color": "#0c1210",
+  "description": "Media Drive & cross-platform publishing for Data Zone"
+}
