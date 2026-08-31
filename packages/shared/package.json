@@ -15,7 +15,8 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rimraf dist"
   },
-  "devDependencies": {
+  "dependencies": {
     "typescript": "^5.7.3"
-  }
+  },
+  "devDependencies": {}
 }
