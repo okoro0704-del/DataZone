@@ -1,1 +1,1 @@
-web: npm run start -w sovereign-drive-engine
+web: npm run start -w @datazone/service

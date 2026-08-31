@@ -8,11 +8,12 @@
       "inputs": [{ "step": "install" }],
       "commands": [
         "npm run build -w @hospitalityos/shared",
-        "npm run build:self -w sovereign-drive-engine"
+        "npm run build -w @datazone/db",
+        "npm run build:self -w @datazone/service"
       ]
     }
   },
   "deploy": {
-    "startCommand": "npm run start -w sovereign-drive-engine"
+    "startCommand": "npm run start -w @datazone/service"
   }
 }
